@@ -1,6 +1,15 @@
 import argparse
 from csv import DictReader, DictWriter
 import re
+import os
+import sys
+
+try:
+    import multiprocessing.forking  # Python 2.x
+except:
+    import multiprocessing.popen_fork as forking  # Python 3.x
+
+import multiprocessing.pool
 
 SAM_FLAG_IS_FIRST_SEGMENT = 0x40
 SAM2ALN_Q_CUTOFFS = [15]  # Q-cutoff for base censoring
@@ -8,6 +17,37 @@ MAX_PROP_N = 0.5          # Drop reads with more censored bases than this propor
 
 cigar_re = re.compile('[0-9]+[MIDNSHPX=]')  # CIGAR token
 gpfx = re.compile('^[-]+')  # length of gap prefix
+
+
+# From https://github.com/pyinstaller/pyinstaller/wiki/Recipe-Multiprocessing
+class _Popen(forking.Popen):
+    def __init__(self, *args, **kw):
+        if hasattr(sys, 'frozen'):
+            # We have to set original _MEIPASS2 value from sys._MEIPASS
+            # to get --onefile mode working.
+            # Last character is stripped in C-loader. We have to add
+            # '/' or '\\' at the end.
+            os.putenv('_MEIPASS2', sys._MEIPASS)  # @UndefinedVariable
+        try:
+            super(_Popen, self).__init__(*args, **kw)
+        finally:
+            if hasattr(sys, 'frozen'):
+                # On some platforms (e.g. AIX) 'os.unsetenv()' is not
+                # available. In those cases we cannot delete the variable
+                # but only set it to the empty string. The bootloader
+                # can handle this case.
+                if hasattr(os, 'unsetenv'):
+                    os.unsetenv('_MEIPASS2')
+                else:
+                    os.putenv('_MEIPASS2', '')
+
+class Process(multiprocessing.Process):
+    _Popen = _Popen
+
+
+class Pool(multiprocessing.pool.Pool):
+    Process = Process
+
 
 
 def apply_cigar(cigar,
@@ -148,8 +188,10 @@ def merge_pairs(seq1, seq2, qual1, qual2, ins1=None, ins2=None, q_cutoff=10,
     for i, c2 in enumerate(seq2):
         if c2 != '-':
             is_reverse_started = True
+
         if i < len(seq1):
             c1 = seq1[i]
+
             if not is_forward_started:
                 if c1 == '-' and c2 == '-':
                     continue
@@ -159,8 +201,10 @@ def merge_pairs(seq1, seq2, qual1, qual2, ins1=None, ins2=None, q_cutoff=10,
                 if c1 == '-' and c2 == '-':
                     mseq += '-'
                     continue
+
             q1 = qual1[i]
             q2 = qual2[i]
+
             if c1 == c2:  # Reads agree and at least one has sufficient confidence
                 if q1 > q_cutoff_char or q2 > q_cutoff_char:
                     mseq += c1
@@ -176,6 +220,7 @@ def merge_pairs(seq1, seq2, qual1, qual2, ins1=None, ins2=None, q_cutoff=10,
                         mseq += 'N'
                 else:
                     mseq += 'N'  # cannot resolve between discordant bases
+
         else:
             # past end of read 1
             if c2 == '-':
@@ -193,7 +238,9 @@ def merge_pairs(seq1, seq2, qual1, qual2, ins1=None, ins2=None, q_cutoff=10,
         for pos in sorted(merged_inserts.keys(), reverse=True):
             ins_mseq = merged_inserts[pos]
             mseq = mseq[:pos] + ins_mseq + mseq[pos:]
+
     return mseq
+
 
 
 
@@ -218,20 +265,20 @@ def merge_inserts(ins1, ins2, q_cutoff=10, minimum_q_delta=5):
     ins1 = {} if ins1 is None else ins1
     ins2 = {} if ins2 is None else ins2
     q_cutoff_char = chr(q_cutoff+33)
-
     merged = {pos: seq
               for pos, (seq, qual) in ins1.items()
               if min(qual) > q_cutoff_char}
-
     for pos, (seq2, qual2) in ins2.items():
         if min(qual2) > q_cutoff_char:
             seq1, qual1 = ins1.get(pos, ('', ''))
-            merged[pos] = merge_pairs(seq1, seq2, qual1, qual2,
+            merged[pos] = merge_pairs(seq1,
+                                      seq2,
+                                      qual1,
+                                      qual2,
                                       q_cutoff=q_cutoff,
                                       minimum_q_delta=minimum_q_delta)
 
     return merged
-
 
 
 def len_gap_prefix(s):
@@ -239,7 +286,6 @@ def len_gap_prefix(s):
     if hits:
         return len(hits[0])
     return 0
-
 
 
 def is_first_read(flag):
@@ -262,17 +308,18 @@ def matchmaker(samfile):
                                     'cigar', 'rnext', 'pnext', 'tlen', 'seq',
                                     'qual'],
                         delimiter='\t')
-    cache = {}
+    cached_rows = {}
     for row in reader:
         qname = row['qname']
-        old_row = cache.pop(qname, None)
+        old_row = cached_rows.pop(qname, None)
         if old_row is None:
-            cache[qname] = row
+            cached_rows[qname] = row
         else:
+            # current row should be the second read of the pair
             yield old_row, row
 
     # return remaining unpaired reads
-    for old_row in cache.values():
+    for old_row in cached_rows.values():
         yield old_row, None
 
 
@@ -308,58 +355,47 @@ def parse_sam(rows, qcut=15):
     rname = row1['rname']
     qname = row1['qname']
 
-    # first bit indicates whether template was sequenced in multiple segments
-    flag = row1['flag']
-    is_paired = int(flag) & 1
-
     cigar1 = row1['cigar']
     cigar2 = row2 and row2['cigar']
     failure_cause = None
-    if is_paired and row2 is None:
+    if row2 is None:
         failure_cause = 'unmatched'
     elif cigar1 == '*' or cigar2 == '*':
         failure_cause = 'badCigar'
-    elif is_paired and row1['rname'] != row2['rname']:
+    elif row1['rname'] != row2['rname']:
         failure_cause = '2refs'
 
+    mseq = ''
+
     if not failure_cause:
-        pos1 = int(row1['pos'])-1  # convert 1-index to 0-index
-        seq1, qual1, inserts = apply_cigar(cigar1, row1['seq'], row1['qual'])
+        pos1 = int(row1['pos']) - 1  # convert 1-index to 0-index
+        seq1, qual1, inserts = apply_cigar(cigar1, row1['seq'], row1['qual'], pos1)
 
         # report insertions relative to sample consensus
         for left, (iseq, iqual) in inserts.items():
             insert_list.append({'qname': qname,
                                 'fwd_rev': 'F' if is_first_read(row1['flag']) else 'R',
                                 'refname': rname,
-                                'pos': pos1+left,
+                                'pos': left,
                                 'insert': iseq,
                                 'qual': iqual})
 
-        seq1 = '-'*pos1 + seq1  # pad sequence on left
-        qual1 = '!'*pos1 + qual1  # assign lowest quality to gap prefix so it does not override mate
-
         # now process the mate
-        if is_paired:
-            pos2 = int(row2['pos'])-1  # convert 1-index to 0-index
-            seq2, qual2, inserts = apply_cigar(cigar2, row2['seq'], row2['qual'])
-            for left, (iseq, iqual) in inserts.items():
-                insert_list.append({'qname': qname,
-                                    'fwd_rev': 'F' if is_first_read(row2['flag']) else 'R',
-                                    'refname': rname,
-                                    'pos': pos2+left,
-                                    'insert': iseq,
-                                    'qual': iqual})
-            seq2 = '-'*pos2 + seq2
-            qual2 = '!'*pos2 + qual2
+        pos2 = int(row2['pos']) - 1  # convert 1-index to 0-index
+        seq2, qual2, inserts = apply_cigar(cigar2, row2['seq'], row2['qual'], pos2)
+
+        for left, (iseq, iqual) in inserts.items():
+            insert_list.append({'qname': qname,
+                                'fwd_rev': 'F' if is_first_read(row2['flag']) else 'R',
+                                'refname': rname,
+                                'pos': left,
+                                'insert': iseq,
+                                'qual': iqual})
 
         # merge reads
-        if is_paired:
-            mseq = merge_pairs(seq1, seq2, qual1, qual2, q_cutoff=qcut)
-        else:
-            mseq = seq1
-
-        prop_N = mseq.count('N') / float(len(mseq.strip('-')))
-        if prop_N > MAX_PROP_N:
+        mseq = merge_pairs(seq1, seq2, qual1, qual2, q_cutoff=qcut)
+        prop_n = mseq.count('N') / float(len(mseq.strip('-')))
+        if prop_n > MAX_PROP_N:
             # fail read pair
             failure_cause = 'manyNs'
 
@@ -380,6 +416,7 @@ def main():
                         help="<input> SAM file")
     parser.add_argument('outfile', type=argparse.FileType('w'),
                         help="<output> CSV file")
+    parser.add_argument('--qcut', type=int, help="Quailty score cutoff")
     args = parser.parse_args()
 
     res = {}
@@ -398,6 +435,19 @@ def main():
                           '-': 0, 'ins': {}}
                 })
             res[pos][nt.upper()] += 1
+
+        for insert in insert_list:
+            pos = start+insert['pos']+1
+            if pos not in res:
+                res.update({
+                    pos: {'pos': pos, 'A': 0, 'C': 0, 'G': 0, 'T': 0, 'N': 0,
+                          '-': 0, 'ins': {}}
+                })
+
+            iseq = insert['insert']
+            if iseq not in res[pos]['ins']:
+                res[pos]['ins'].update({iseq: 0})
+            res[pos]['ins'][iseq] += 1
 
         counter += 1
         if counter % 1000 == 0:
