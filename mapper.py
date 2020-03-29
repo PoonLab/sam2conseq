@@ -406,21 +406,14 @@ def parse_sam(rows, qcut=15):
     return rname, mseq, insert_list, failed_list
 
 
-def main():
+def mapper(samfile):
     """
-    Command-line execution
-    :return:
-    """
-    parser = argparse.ArgumentParser("Parse SAM output file")
-    parser.add_argument('samfile', type=argparse.FileType('r'),
-                        help="<input> SAM file")
-    parser.add_argument('outfile', type=argparse.FileType('w'),
-                        help="<output> CSV file")
-    parser.add_argument('--qcut', type=int, help="Quailty score cutoff")
-    args = parser.parse_args()
 
+    :param samfile: open stream to SAM file
+    :return: dict, nucleotide and insertion counts
+    """
     res = {}
-    iter = map(parse_sam, matchmaker(args.samfile))
+    iter = map(parse_sam, matchmaker(samfile))
 
     counter = 0
     for rname, mseq, insert_list, failed_list in iter:
@@ -452,6 +445,24 @@ def main():
         counter += 1
         if counter % 1000 == 0:
             print(counter)
+
+    return(res)
+
+
+def main():
+    """
+    Command-line execution
+    :return:
+    """
+    parser = argparse.ArgumentParser("Parse SAM output file")
+    parser.add_argument('samfile', type=argparse.FileType('r'),
+                        help="<input> SAM file")
+    parser.add_argument('outfile', type=argparse.FileType('w'),
+                        help="<output> CSV file")
+    parser.add_argument('--qcut', type=int, help="Quailty score cutoff")
+    args = parser.parse_args()
+
+    res = mapper(args.samfile)
 
     # write output
     writer = DictWriter(args.outfile,
