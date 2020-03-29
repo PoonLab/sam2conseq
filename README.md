@@ -22,7 +22,7 @@ python3 mapper.py data/SRR11140746.trim.sam test.csv
 covid <- read.csv('~/git/covidio/data/test.csv', header=F)
 names(covid) <- c('pos', 'A', 'C', 'G', 'T', 'N', 'del', 'ins')
 covid$coverage <- apply(covid[,2:5], 1, sum)
-cov <- covid[1:29879,]  # see issue #2
+cov <- covid[1:29879,]  # see issue #1
 
 # coverage plot
 plot(cov$pos, cov$coverage, type='s')
