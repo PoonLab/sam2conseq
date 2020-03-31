@@ -3,6 +3,7 @@ from csv import DictReader, DictWriter
 import re
 import os
 import sys
+import difflib
 
 try:
     import multiprocessing.forking  # Python 2.x
@@ -17,6 +18,7 @@ MAX_PROP_N = 0.5          # Drop reads with more censored bases than this propor
 
 cigar_re = re.compile('[0-9]+[MIDNSHPX=]')  # CIGAR token
 gpfx = re.compile('^[-]+')  # length of gap prefix
+gsfx = re.compile('[-]+$')  # length of gap suffix
 
 
 # From https://github.com/pyinstaller/pyinstaller/wiki/Recipe-Multiprocessing
@@ -176,7 +178,72 @@ def merge_pairs(seq1, seq2, qual1, qual2, ins1=None, ins2=None, q_cutoff=10,
         will be reported as an N.
     @return: the merged sequence of base calls in a string
     """
+
+    # handle trivial case of exact match
+    if seq1 == seq2:
+        return seq1
+
+    # initialize merged sequence with shared gap prefix
+    gp1 = len_gap_prefix(seq1)
+    gp2 = len_gap_prefix(seq2)
+    shared = min(gp1, gp2)
+    mseq = '-' * shared
+
+    # update sequence and quality strings
+    seq1 = seq1[shared:]
+    seq2 = seq2[shared:]
+    qual1 = qual1[shared:]
+    qual2 = qual2[shared:]
+    gp1 -= shared
+    gp2 -= shared
+
+    # transfer 5' region covered by only one of two reads
+    if gp1 > gp2:
+        # transfer seq2 prefix
+        mseq += seq2[:gp1]
+    elif gp1 < gp2:
+        # transfer seq1 prefix
+        mseq += seq1[:gp2]
+
+    # update sequence and quality strings
+    gpmax = max(gp1, gp2)
+    seq1 = seq1[gpmax:]
+    seq2 = seq2[gpmax:]
+    qual1 = qual1[gpmax:]
+    qual2 = qual2[gpmax:]
+
+
+    # if strings are unequal lengths, cache the overhang
+    len_delta = len(seq1) - len(seq2)
+    seq_cached = ''
+    qual_cached = ''
+
+    if len_delta < 0:
+        # seq1 is shorter
+        seq_cached = seq2[(len(seq2)+len_delta): ]
+        qual_cached = qual2[(len(seq2)+len_delta): ]
+        seq2 = seq2[len(seq1): ]
+        qual2 = qual2[len(seq1): ]
+    else:
+        # seq2 is shorter
+        seq_cached = seq1[(len(seq1)-len_delta): ]
+        qual_cached = qual1[(len(seq1)-len_delta): ]
+        seq1 = seq1[len(seq2): ]
+        qual1 = qual1[len(seq2): ]
+
+
+    # ndiff() returns UNIX diff-style strings
+    diffs = filter(lambda x: x[1][0]!=' ', enumerate(difflib.ndiff(seq1, seq2)))
+
+    ld = list(diffs)
+    if ld:
+        print(ld)
+        print(seq1)
+        print(seq2)
+        sys.exit()
+
     mseq = ''
+
     # force second read to be longest of the two
     if len(seq1) > len(seq2):
         seq1, seq2 = seq2, seq1
@@ -283,6 +350,12 @@ def merge_inserts(ins1, ins2, q_cutoff=10, minimum_q_delta=5):
 
 def len_gap_prefix(s):
     hits = gpfx.findall(s)
+    if hits:
+        return len(hits[0])
+    return 0
+
+def len_gap_suffix(s):
+    hits = gsfx.findall(s)
     if hits:
         return len(hits[0])
     return 0
@@ -445,6 +518,8 @@ def mapper(samfile):
         counter += 1
         if counter % 1000 == 0:
             print(counter)
+        if counter > 20000:
+            break  # profiling
 
     return(res)
 
@@ -454,7 +529,10 @@ def main():
     Command-line execution
     :return:
     """
-    parser = argparse.ArgumentParser("Parse SAM output file")
+    parser = argparse.ArgumentParser(
+        description="Generate consensus sequence from a SAM (sequence alignment/map) file. "
+        "Validation in progress for use on SARS-COV-2 samples."
+    )
     parser.add_argument('samfile', type=argparse.FileType('r'),
                         help="<input> SAM file")
     parser.add_argument('outfile', type=argparse.FileType('w'),
@@ -462,11 +540,13 @@ def main():
     parser.add_argument('--qcut', type=int, help="Quailty score cutoff")
     args = parser.parse_args()
 
+    # run the analysis
     res = mapper(args.samfile)
 
     # write output
     writer = DictWriter(args.outfile,
                         fieldnames=['pos', 'A', 'C', 'G', 'T', 'N', '-', 'ins'])
+    writer.writeheader()
     intermed = [(k, v) for k, v in res.items()]
     intermed.sort()
     for pos, row in intermed:
