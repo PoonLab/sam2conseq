@@ -475,7 +475,7 @@ def freq2conseq(freq, cutoff=None):
                     incorporated into a majority-rule consensus
     :return:  str, consensus sequence
     """
-    alpha = 'ACGTN-'
+    alpha = ['A', 'C', 'G', 'T', 'N', '-']
     conseq = ''
     last_pos = None
     for pos, row in freq.items():
@@ -486,15 +486,19 @@ def freq2conseq(freq, cutoff=None):
 
         # extract counts, appending any insertions
         counts = [row[nt] for nt in alpha]
+
+        # is any insertion length more frequent than non-insert states?
+
+
+        alpha2 = alpha
         for iseq, icount in row['ins'].items():
-            alpha.append(iseq)
+            alpha2.append(iseq)
             counts.append(icount)
 
         props = [x/sum(counts) for x in counts]
 
         max_count = max(counts)
         max_state = [alpha[ix] for ix, count in enumerate(counts) if count == max_count]
-
 
         last_pos = pos
 
