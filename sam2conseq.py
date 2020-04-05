@@ -392,10 +392,16 @@ def freq2conseq(freq, cutoff=None):
                     incorporated into a consensus
     :return:  str, consensus sequence
     """
+
+    keys = [int(x) for x in freq.keys()]
+    keys.sort()
+
     alpha = ['A', 'C', 'G', 'T', 'N', '-']
     conseq = ''
     last_pos = None
-    for pos, row in freq.items():
+    for pos in keys:
+        row = freq[str(pos)]
+
         if not last_pos is None and pos - last_pos > 1:
             # incomplete coverage
             for i in range(last_pos, pos-1):
@@ -448,6 +454,16 @@ def freq2conseq(freq, cutoff=None):
 
     # remove deletions (gaps) before returning
     return conseq.replace('-', '')
+
+
+def import_freq(handle):
+    res = {}
+    for row in DictReader(handle):
+        for nt in 'ACGTN-':
+            row[nt] = int(row[nt])
+        row['ins'] = eval(row['ins'])
+        res.update({row['pos']: row})
+    return(res)
 
 
 def main():
