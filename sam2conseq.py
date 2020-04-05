@@ -20,46 +20,20 @@ cigar_re = re.compile('[0-9]+[MIDNSHPX=]')  # CIGAR token
 gpfx = re.compile('^[-]+')  # length of gap prefix
 gsfx = re.compile('[-]+$')  # length of gap suffix
 
-
-# From https://github.com/pyinstaller/pyinstaller/wiki/Recipe-Multiprocessing
-class _Popen(forking.Popen):
-    def __init__(self, *args, **kw):
-        if hasattr(sys, 'frozen'):
-            # We have to set original _MEIPASS2 value from sys._MEIPASS
-            # to get --onefile mode working.
-            # Last character is stripped in C-loader. We have to add
-            # '/' or '\\' at the end.
-            os.putenv('_MEIPASS2', sys._MEIPASS)  # @UndefinedVariable
-        try:
-            super(_Popen, self).__init__(*args, **kw)
-        finally:
-            if hasattr(sys, 'frozen'):
-                # On some platforms (e.g. AIX) 'os.unsetenv()' is not
-                # available. In those cases we cannot delete the variable
-                # but only set it to the empty string. The bootloader
-                # can handle this case.
-                if hasattr(os, 'unsetenv'):
-                    os.unsetenv('_MEIPASS2')
-                else:
-                    os.putenv('_MEIPASS2', '')
-
-class Process(multiprocessing.Process):
-    _Popen = _Popen
+ambig_dict = {
+    # two-fold mixtures
+    'AC': 'M', 'AG': 'R', 'AT': 'W', 'CG': 'S', 'CT': 'Y', 'GT': 'K',
+    # three-fold mixtures
+    'ACG': 'V', 'ACT': 'H', 'AGT': 'D', 'CGT': 'B',
+    # four-fold-mixture
+    'ACGT': 'N',
+    # ties between resolved and fully ambiguous bases
+    'AN': 'A', 'CN': 'C', 'GN': 'G', 'TN': 'T'
+    # any other combination is resolved as "N"
+}
 
 
-class Pool(multiprocessing.pool.Pool):
-    Process = Process
-
-
-
-def apply_cigar(cigar,
-                seq,
-                qual,
-                pos=0,
-                clip_from=0,
-                clip_to=None,
-                mapped=None,
-                soft_clipped=None):
+def apply_cigar(cigar, seq, qual, pos=0):
     """ Applies a cigar string to recreate a read, then clips the read.
 
     Use CIGAR string (Compact Idiosyncratic Gapped Alignment Report) in SAM data
@@ -74,16 +48,7 @@ def apply_cigar(cigar,
     @param qual: quality codes for each base in the read
     @param pos: first position of the read, given in zero-based consensus
         coordinates
-    @param clip_from: first position to include after clipping, given in
-        zero-based consensus coordinates
-    @param clip_to: last position to include after clipping, given in
-        zero-based consensus coordinates, None means no clipping at the end
-    @param mapped: a set or None. If not None, the set will be filled with all
-        zero-based consensus positions that were mapped to a nucleotide in the
-        read
-    @param soft_clipped: a set or None. If not None, the set will be filled with
-        all zero-based consensus positions that would have been mapped to
-        nucleotides that got soft clipped
+
     @return: (sequence, quality, {pos: (insert_seq, insert_qual)}) - the new
         sequence, the new quality string, and a dictionary of insertions with
         the zero-based coordinate in the new sequence that follows each
@@ -94,67 +59,63 @@ def apply_cigar(cigar,
     newseq = '-' * int(pos)  # pad on left
     newqual = '!' * int(pos)
     insertions = {}
+
+    # is this a valid CIGAR string?
     is_valid = re.match(r'^((\d+)([MIDNSHPX=]))*$', cigar)
-    tokens = re.findall(r'  (\d+)([MIDNSHPX=])', cigar, re.VERBOSE)
     if not is_valid:
         raise RuntimeError('Invalid CIGAR string: {!r}.'.format(cigar))
-    end = None if clip_to is None else clip_to + 1
-    left = 0
+
+    left = 0  # tracks position along read
+    tokens = re.findall(r'  (\d+)([MIDNSHPX=])', cigar, re.VERBOSE)
+
     for token in tokens:
         length, operation = token
         length = int(length)
+
         # Matching sequence: carry it over
         if operation == 'M':
-            if mapped is not None:
-                curr_pos = len(newseq)
-                for i in range(curr_pos, curr_pos + length):
-                    mapped.add(i)
             newseq += seq[left:(left+length)]
             newqual += qual[left:(left+length)]
             left += length
+
         # Deletion relative to reference: pad with gaps
         elif operation == 'D':
             newseq += '-'*length
             newqual += ' '*length  # Assign fake placeholder score (Q=-1)
+
         # Insertion relative to reference
         elif operation == 'I':
-            ins_pos = len(newseq)
-            if end is None or ins_pos < end:
-                insertions[ins_pos-clip_from] = (seq[left:(left+length)],
-                                                 qual[left:(left+length)])
+            ins_pos = len(newseq)  # ref coordinates, 0-index
+            insertions[ins_pos] = (
+                seq[left:(left+length)],
+                qual[left:(left+length)]
+            )
             left += length
+
         # Soft clipping leaves the sequence in the SAM - so we should skip it
         elif operation == 'S':
-            if soft_clipped is not None:
-                curr_pos = len(newseq)
-                if left == 0:
-                    clip_start = curr_pos - length
-                    clip_end = curr_pos
-                else:
-                    clip_start = curr_pos
-                    clip_end = curr_pos + length
-                for i in range(clip_start, clip_end):
-                    soft_clipped.add(i)
             left += length
         else:
-            raise RuntimeError('Unsupported CIGAR token: {!r}.'.format(
-                ''.join(token)))
+            raise RuntimeError(
+                'Unsupported CIGAR token: {!r}.'.format(''.join(token))
+            )
+
         if left > len(seq):
             raise RuntimeError(
-                'CIGAR string {!r} is too long for sequence {!r}.'.format(cigar,
-                                                                          seq))
+                'CIGAR string {!r} is too long for sequence {!r}.'.format(
+                    cigar, seq)
+            )
 
     if left < len(seq):
         raise RuntimeError(
-            'CIGAR string {!r} is too short for sequence {!r}.'.format(cigar,
-                                                                       seq))
+            'CIGAR string {!r} is too short for sequence {!r}.'.format(
+                cigar, seq)
+        )
 
-    return newseq[clip_from:end], newqual[clip_from:end], insertions
+    return newseq, newqual, insertions
 
 
-
-
-def merge_pairs(seq1, seq2, qual1, qual2, ins1=None, ins2=None, q_cutoff=10,
+def merge_pairs(seq1, seq2, qual1, qual2, q_cutoff=10,
                 minimum_q_delta=5):
     """
     Combine paired-end reads into a single sequence.
@@ -166,11 +127,6 @@ def merge_pairs(seq1, seq2, qual1, qual2, ins1=None, ins2=None, q_cutoff=10,
     @param qual1: a string of quality scores for the base calls in seq1, each
         quality score is an ASCII character of the Phred-scaled base quality+33
     @param qual2: a string of quality scores for the base calls in seq2
-    @param ins1: { pos: (seq, qual) } a dictionary of insertions to seq1 with
-        the zero-based position that follows each insertion as the
-        key, and the insertion sequence and quality strings as the
-        value. May also be None.
-    @param ins2: the same as ins1, but for seq2
     @param q_cutoff: Phred-scaled base quality as an integer - each base quality
         score must be higher than this, or the base will be reported as an N.
     @param minimum_q_delta: if the two reads disagree on a base, the higher
@@ -190,6 +146,7 @@ def merge_pairs(seq1, seq2, qual1, qual2, ins1=None, ins2=None, q_cutoff=10,
     q_cutoff_char = chr(q_cutoff+33)
     is_forward_started = False
     is_reverse_started = False
+
     for i, c2 in enumerate(seq2):
         if c2 != '-':
             is_reverse_started = True
@@ -210,11 +167,13 @@ def merge_pairs(seq1, seq2, qual1, qual2, ins1=None, ins2=None, q_cutoff=10,
             q1 = qual1[i]
             q2 = qual2[i]
 
-            if c1 == c2:  # Reads agree and at least one has sufficient confidence
+            if c1 == c2:
+                # Reads agree and at least one has sufficient confidence
                 if q1 > q_cutoff_char or q2 > q_cutoff_char:
                     mseq += c1
                 else:
                     mseq += 'N'  # neither base is confident
+
             else:
                 if abs(ord(q2) - ord(q1)) >= minimum_q_delta:
                     if q1 > max(q2, q_cutoff_char):
@@ -238,52 +197,7 @@ def merge_pairs(seq1, seq2, qual1, qual2, ins1=None, ins2=None, q_cutoff=10,
             else:
                 mseq += 'N'
 
-    if ins1 or ins2:
-        merged_inserts = merge_inserts(ins1, ins2, q_cutoff, minimum_q_delta)
-        for pos in sorted(merged_inserts.keys(), reverse=True):
-            ins_mseq = merged_inserts[pos]
-            mseq = mseq[:pos] + ins_mseq + mseq[pos:]
-
     return mseq
-
-
-
-
-def merge_inserts(ins1, ins2, q_cutoff=10, minimum_q_delta=5):
-    """ Merge two sets of insertions.
-
-    @param ins1: { pos: (seq, qual) } a dictionary of insertions from a
-        forward read with
-        the zero-based position that follows each insertion as the
-        key, and the insertion sequence and quality strings as the
-        value. May also be None.
-    @param ins2: the same as ins1, but for the reverse read
-    @param q_cutoff: Phred-scaled base quality as an integer - each base quality
-        score must be higher than this, or the base will be reported as an N.
-    @param minimum_q_delta: if two insertions disagree on a base, the higher
-        quality must be at least this much higher than the other, or that base
-        will be reported as an N.
-    @return: {pos: seq} for each of the positions in ins1 and ins2. If the same
-        position was in both, then the two insertions are merged. If the minimum
-        quality for an insertion is below q_cutoff, that insertion is ignored.
-    """
-    ins1 = {} if ins1 is None else ins1
-    ins2 = {} if ins2 is None else ins2
-    q_cutoff_char = chr(q_cutoff+33)
-    merged = {pos: seq
-              for pos, (seq, qual) in ins1.items()
-              if min(qual) > q_cutoff_char}
-    for pos, (seq2, qual2) in ins2.items():
-        if min(qual2) > q_cutoff_char:
-            seq1, qual1 = ins1.get(pos, ('', ''))
-            merged[pos] = merge_pairs(seq1,
-                                      seq2,
-                                      qual1,
-                                      qual2,
-                                      q_cutoff=q_cutoff,
-                                      minimum_q_delta=minimum_q_delta)
-
-    return merged
 
 
 def len_terminal_gap(s, prefix=True):
@@ -299,6 +213,7 @@ def is_first_read(flag):
     Returns True or False indicating whether the read is the first read in a pair.
     """
     return (int(flag) & SAM_FLAG_IS_FIRST_SEGMENT) != 0
+
 
 def matchmaker(samfile):
     """
@@ -330,7 +245,7 @@ def matchmaker(samfile):
 
 
 # TODO: handle reads from unpaired SAM
-def parse_sam(rows, qcut=15, is_paired=True):
+def parse_sam(rows, qcut=15):
     """ Merge two matched reads into a single aligned read.
 
     Also report insertions and failed merges.
@@ -377,7 +292,7 @@ def parse_sam(rows, qcut=15, is_paired=True):
         pos1 = int(row1['pos']) - 1  # convert 1-index to 0-index
         seq1, qual1, inserts = apply_cigar(cigar1, row1['seq'], row1['qual'], pos1)
 
-        # report insertions relative to sample consensus
+        # report insertions relative to reference
         for left, (iseq, iqual) in inserts.items():
             insert_list.append({
                 'qname': qname,
@@ -416,7 +331,7 @@ def parse_sam(rows, qcut=15, is_paired=True):
     return rname, mseq, insert_list, failed_list
 
 
-def sam2freq(samfile, paired=True):
+def sam2freq(samfile):
     """
     Parse contents of sequence/alignment map (SAM) file to apply
     local alignment information encoded in CIGAR string.
@@ -442,7 +357,9 @@ def sam2freq(samfile, paired=True):
             res[pos][nt.upper()] += 1
 
         for insert in insert_list:
-            pos = start+insert['pos']+1
+            # 'pos' recorded in aligned coordinate system
+            pos = insert['pos']+1
+
             if pos not in res:
                 res.update({
                     pos: {'pos': pos, 'A': 0, 'C': 0, 'G': 0, 'T': 0, 'N': 0,
@@ -458,8 +375,8 @@ def sam2freq(samfile, paired=True):
         counter += 1
         if counter % 1000 == 0:
             print(counter)
-        if counter > 20000:
-            break  # profiling
+        #if counter > 20000:
+        #    break  # profiling
 
     return(res)
 
@@ -471,8 +388,8 @@ def freq2conseq(freq, cutoff=None):
 
     :param freq:  dict, frequency table returned by sam2freq()
     :param cutoff:  if None (default), return plurality-rule consensus;
-                    otherwise any state with frequency above cutoff is
-                    incorporated into a majority-rule consensus
+                    otherwise any state with proportion above cutoff is
+                    incorporated into a consensus
     :return:  str, consensus sequence
     """
     alpha = ['A', 'C', 'G', 'T', 'N', '-']
@@ -484,23 +401,54 @@ def freq2conseq(freq, cutoff=None):
             for i in range(last_pos, pos-1):
                 conseq += 'n'
 
-        # extract counts, appending any insertions
+        # are insertions more frequent than any other state?
         counts = [row[nt] for nt in alpha]
+        ins_counts = [icount for iseq, icount in row['ins'].items()]
 
-        # is any insertion length more frequent than non-insert states?
+        if sum(ins_counts) > sum(counts):
+            # we have no way of representing a mixture of insertion
+            # and non-insertion states, so default to plurality rule
+            # TODO: how do we handle this? need a test case
+            pass
 
+        try:
+            propns = [count/sum(counts) for count in counts]
+        except:
+            print(row)
+            raise
 
-        alpha2 = alpha
-        for iseq, icount in row['ins'].items():
-            alpha2.append(iseq)
-            counts.append(icount)
+        if cutoff is None:
+            # plurality consensus
+            max_propn = max(propns)
+            max_state = [
+                alpha[ix] for ix, propn in enumerate(propns) if propn == max_propn
+                ]
+        else:
+            # cutoff consensus
+            max_state = [
+                alpha[ix] for ix, propn in enumerate(propns) if propn > cutoff
+            ]
 
-        props = [x/sum(counts) for x in counts]
+        if len(max_state) > 1:
+            # resolve tie with IUPAC encoding
+            max_state.sort()
+            key = ''.join(max_state)
+            mixture = ambig_dict.get(key, None)
 
-        max_count = max(counts)
-        max_state = [alpha[ix] for ix, count in enumerate(counts) if count == max_count]
+            if mixture is None:
+                print("WARNING: unrecognized mixture {}, encoding as 'N'.".format(
+                    mixture))
+                mixture = 'N'
+
+            conseq += mixture
+        else:
+            conseq += max_state[0]
 
         last_pos = pos
+
+    # remove deletions (gaps) before returning
+    return conseq.replace('-', '')
+
 
 def main():
     """
@@ -513,22 +461,37 @@ def main():
     )
     parser.add_argument('samfile', type=argparse.FileType('r'),
                         help="<input> SAM file")
-    parser.add_argument('outfile', type=argparse.FileType('w'),
+    parser.add_argument('csvfile', type=argparse.FileType('w'),
                         help="<output> CSV file")
-    parser.add_argument('--qcut', type=int, help="Quailty score cutoff")
+    parser.add_argument('outfile', type=argparse.FileType('w'),
+                        help="<output> consensus sequence")
+
+    # FIXME: this isn't used
+    parser.add_argument('--qcut', type=int,
+                        help="<optional> Quality score cutoff")
+
+    parser.add_argument('--threshold', type=float,
+                        help="<optional> Frequency cutoff (0,1) for majority-rule "
+                             "consensus")
+
     args = parser.parse_args()
 
     # run the analysis
     res = sam2freq(args.samfile)
 
     # write output
-    writer = DictWriter(args.outfile,
+    writer = DictWriter(args.csvfile,
                         fieldnames=['pos', 'A', 'C', 'G', 'T', 'N', '-', 'ins'])
     writer.writeheader()
     intermed = [(k, v) for k, v in res.items()]
     intermed.sort()
     for pos, row in intermed:
         writer.writerow(row)
+
+    # generate consensus sequence
+    conseq = freq2conseq(res, cutoff=args.threshold)
+    args.outfile.write(conseq+'\n')
+
 
 if __name__ == '__main__':
     main()
