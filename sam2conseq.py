@@ -1,9 +1,7 @@
 import argparse
 from csv import DictReader, DictWriter
 import re
-import os
-import sys
-import difflib
+
 
 try:
     import multiprocessing.forking  # Python 2.x
@@ -215,19 +213,14 @@ def is_first_read(flag):
     return (int(flag) & SAM_FLAG_IS_FIRST_SEGMENT) != 0
 
 
-def matchmaker(samfile):
+def matchmaker(reader):
     """
     Iterate over a SAM file and return paired-end reads as tuples.
     Should be able to redirect standard output from a mapper program, e.g.,
     bowtie2, to this function.
-    :param samfile:  an open stream to a SAM format file.
+    :param reader:  an open csv.DictReader object
     :return:  tuples of paired read entries, generated from stream.
     """
-    reader = DictReader(filter(lambda x: not x.startswith('@'), samfile),
-                        fieldnames=['qname', 'flag', 'rname', 'pos', 'mapq',
-                                    'cigar', 'rnext', 'pnext', 'tlen', 'seq',
-                                    'qual'],
-                        delimiter='\t')
     cached_rows = {}
     for row in reader:
         qname = row['qname']
@@ -269,7 +262,13 @@ def parse_sam(rows, qcut=15):
                          'mseq': merged_sequence}] sequences that failed to
         merge.
     """
-    row1, row2 = rows
+    if len(rows) == 2:
+        unpaired = False
+        row1, row2 = rows
+    else:
+        unpaired = True
+        row1 = rows
+        row2 = None
 
     failed_list = []
     insert_list = []
@@ -277,16 +276,20 @@ def parse_sam(rows, qcut=15):
     qname = row1['qname']
 
     cigar1 = row1['cigar']
-    cigar2 = row2 and row2['cigar']
-    failure_cause = None
-    if row2 is None:
-        failure_cause = 'unmatched'
-    elif cigar1 == '*' or cigar2 == '*':
-        failure_cause = 'badCigar'
-    elif row1['rname'] != row2['rname']:
-        failure_cause = '2refs'
+    if not unpaired:
+        cigar2 = row2['cigar']
 
-    mseq = ''
+    failure_cause = None
+    if unpaired:
+        if cigar1 == '*':
+            failure_cause = 'badCigar'
+    else:
+        if row2 is None:
+            failure_cause = 'unmatched'
+        elif cigar1 == '*' or cigar2 == '*':
+            failure_cause = 'badCigar'
+        elif row1['rname'] != row2['rname']:
+            failure_cause = '2refs'
 
     if not failure_cause:
         pos1 = int(row1['pos']) - 1  # convert 1-index to 0-index
@@ -303,22 +306,26 @@ def parse_sam(rows, qcut=15):
                 'qual': iqual
             })
 
-        # now process the mate
-        pos2 = int(row2['pos']) - 1  # convert 1-index to 0-index
-        seq2, qual2, inserts = apply_cigar(cigar2, row2['seq'], row2['qual'], pos2)
+        if unpaired:
+            mseq = seq1
+        else:
+            # process the mate
+            pos2 = int(row2['pos']) - 1  # convert 1-index to 0-index
+            seq2, qual2, inserts = apply_cigar(cigar2, row2['seq'], row2['qual'], pos2)
 
-        for left, (iseq, iqual) in inserts.items():
-            insert_list.append({
-                'qname': qname,
-                'fwd_rev': 'F' if is_first_read(row2['flag']) else 'R',
-                'refname': rname,
-                'pos': left,
-                'insert': iseq,
-                'qual': iqual
-            })
+            for left, (iseq, iqual) in inserts.items():
+                insert_list.append({
+                    'qname': qname,
+                    'fwd_rev': 'F' if is_first_read(row2['flag']) else 'R',
+                    'refname': rname,
+                    'pos': left,
+                    'insert': iseq,
+                    'qual': iqual
+                })
 
-        # merge reads
-        mseq = merge_pairs(seq1, seq2, qual1, qual2, q_cutoff=qcut)
+            # merge reads
+            mseq = merge_pairs(seq1, seq2, qual1, qual2, q_cutoff=qcut)
+
         prop_n = mseq.count('N') / float(len(mseq.strip('-')))
         if prop_n > MAX_PROP_N:
             # fail read pair
@@ -331,7 +338,7 @@ def parse_sam(rows, qcut=15):
     return rname, mseq, insert_list, failed_list
 
 
-def sam2freq(samfile):
+def sam2freq(samfile, unpaired=False):
     """
     Parse contents of sequence/alignment map (SAM) file to apply
     local alignment information encoded in CIGAR string.
@@ -339,8 +346,15 @@ def sam2freq(samfile):
     :param samfile: open stream to SAM file
     :return: dict, nucleotide and insertion counts
     """
+
+    reader = DictReader(filter(lambda x: not x.startswith('@'), samfile),
+                        fieldnames=['qname', 'flag', 'rname', 'pos', 'mapq',
+                                    'cigar', 'rnext', 'pnext', 'tlen', 'seq',
+                                    'qual'],
+                        delimiter='\t')
+
     res = {}
-    iter = map(parse_sam, matchmaker(samfile))
+    iter = map(parse_sam, reader if unpaired else matchmaker(reader))
 
     counter = 0
     for rname, mseq, insert_list, failed_list in iter:
@@ -486,11 +500,13 @@ def main():
     parser.add_argument('--threshold', type=float,
                         help="<optional> Frequency cutoff (0,1) for majority-rule "
                              "consensus")
+    parser.add_argument('--unpaired', action='store_true',
+                        help="Reads are unpaired (single layout).")
 
     args = parser.parse_args()
 
     # run the analysis
-    res = sam2freq(args.samfile)
+    res = sam2freq(args.samfile, unpaired=args.unpaired)
 
     # write output
     writer = DictWriter(args.csvfile,
