@@ -213,7 +213,7 @@ def is_first_read(flag):
     return (int(flag) & SAM_FLAG_IS_FIRST_SEGMENT) != 0
 
 
-def matchmaker(reader):
+def matchmaker(reader, unpaired=False):
     """
     Iterate over a SAM file and return paired-end reads as tuples.
     Should be able to redirect standard output from a mapper program, e.g.,
@@ -221,19 +221,23 @@ def matchmaker(reader):
     :param reader:  an open csv.DictReader object
     :return:  tuples of paired read entries, generated from stream.
     """
-    cached_rows = {}
-    for row in reader:
-        qname = row['qname']
-        old_row = cached_rows.pop(qname, None)
-        if old_row is None:
-            cached_rows[qname] = row
-        else:
-            # current row should be the second read of the pair
-            yield old_row, row
+    if unpaired:
+        for row in reader:
+            yield row
+    else:
+        cached_rows = {}
+        for row in reader:
+            qname = row['qname']
+            old_row = cached_rows.pop(qname, None)
+            if old_row is None:
+                cached_rows[qname] = row
+            else:
+                # current row should be the second read of the pair
+                yield old_row, row
 
-    # return remaining unpaired reads
-    for old_row in cached_rows.values():
-        yield old_row, None
+        # return remaining unpaired reads
+        for old_row in cached_rows.values():
+            yield old_row, None
 
 
 
@@ -262,7 +266,7 @@ def parse_sam(rows, qcut=15):
                          'mseq': merged_sequence}] sequences that failed to
         merge.
     """
-    if len(rows) == 2:
+    if type(rows) is tuple:
         unpaired = False
         row1, row2 = rows
     else:
@@ -354,7 +358,7 @@ def sam2freq(samfile, unpaired=False):
                         delimiter='\t')
 
     res = {}
-    iter = map(parse_sam, reader if unpaired else matchmaker(reader))
+    iter = map(parse_sam, matchmaker(reader, unpaired))
 
     counter = 0
     for rname, mseq, insert_list, failed_list in iter:
