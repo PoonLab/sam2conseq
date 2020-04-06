@@ -1,5 +1,6 @@
 The purpose of this script is to generate a consensus sequence from a SAM (sequence alignment map) format file that is a standard output of a short-read mapping program such as `bowtie2`.
-We are in the process of validating this script on all published NGS data sets in the [NCBI SRA database](https://www.ncbi.nlm.nih.gov/genbank/sars-cov-2-seqs/) that were generated on Illumina platforms.
+
+We are in the process of validating this script on all published NGS data sets in the [NCBI SRA database](https://www.ncbi.nlm.nih.gov/genbank/sars-cov-2-seqs/) that were generated from [betacoronavirus](https://en.wikipedia.org/wiki/Betacoronavirus)/[SARS-COV-2](https://en.wikipedia.org/wiki/Severe_acute_respiratory_syndrome_coronavirus_2) patient samples on [Illumina](https://en.wikipedia.org/wiki/Illumina_dye_sequencing) platforms.
 You can view our progress in the [issue tracker](https://github.com/PoonLab/sam2conseq/issues) and the [wiki document](https://github.com/PoonLab/sam2conseq/wiki).
 
 This script is derived from the Python script `sam2aln.py` that is part of the [MiCall pipeline](http://github.com/cfe-lab/MiCall).
