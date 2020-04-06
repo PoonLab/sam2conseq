@@ -274,6 +274,7 @@ def parse_sam(rows, qcut=15):
         row1 = rows
         row2 = None
 
+    mseq = ''
     failed_list = []
     insert_list = []
     rname = row1['rname']
@@ -281,7 +282,11 @@ def parse_sam(rows, qcut=15):
 
     cigar1 = row1['cigar']
     if not unpaired:
-        cigar2 = row2['cigar']
+        try:
+            cigar2 = row2['cigar']
+        except:
+            print("Error: expected row2 in parse_sam; did you forget to set --unpaired?")
+            raise
 
     failure_cause = None
     if unpaired:
@@ -350,6 +355,7 @@ def sam2freq(samfile, unpaired=False):
     :param samfile: open stream to SAM file
     :return: dict, nucleotide and insertion counts
     """
+    print(unpaired)
 
     reader = DictReader(filter(lambda x: not x.startswith('@'), samfile),
                         fieldnames=['qname', 'flag', 'rname', 'pos', 'mapq',
@@ -421,7 +427,12 @@ def freq2conseq(freq, cutoff=None, ins_cutoff=0.5):
     conseq = ''
     last_pos = None
     for pos in keys:
-        row = freq[str(pos)]
+        try:
+            row = freq[str(pos)]
+        except:
+            print(freq.keys())
+            print(pos)
+            raise
 
         if not last_pos is None and pos - last_pos > 1:
             # incomplete coverage
