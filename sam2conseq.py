@@ -355,8 +355,6 @@ def sam2freq(samfile, unpaired=False):
     :param samfile: open stream to SAM file
     :return: dict, nucleotide and insertion counts
     """
-    print(unpaired)
-
     reader = DictReader(filter(lambda x: not x.startswith('@'), samfile),
                         fieldnames=['qname', 'flag', 'rname', 'pos', 'mapq',
                                     'cigar', 'rnext', 'pnext', 'tlen', 'seq',
@@ -364,10 +362,11 @@ def sam2freq(samfile, unpaired=False):
                         delimiter='\t')
 
     res = {}
-    iter = map(parse_sam, matchmaker(reader, unpaired))
+    # construct iterable
+    itr = map(parse_sam, matchmaker(reader, unpaired))
 
     counter = 0
-    for rname, mseq, insert_list, failed_list in iter:
+    for rname, mseq, insert_list, failed_list in itr:
         start = len_terminal_gap(mseq)
         seq = mseq.lstrip('-')
 
@@ -400,9 +399,9 @@ def sam2freq(samfile, unpaired=False):
         if counter % 1000 == 0:
             print(counter)
         #if counter > 20000:
-        #    break  # profiling
+        #    break  # profiling/debugging
 
-    return(res)
+    return res
 
 
 def freq2conseq(freq, cutoff=None, ins_cutoff=0.5):
@@ -420,7 +419,7 @@ def freq2conseq(freq, cutoff=None, ins_cutoff=0.5):
     :return:  str, consensus sequence
     """
 
-    keys = [int(x) for x in freq.keys()]
+    keys = [x for x in freq.keys()]
     keys.sort()
 
     alpha = ['A', 'C', 'G', 'T', 'N', '-']
@@ -428,7 +427,7 @@ def freq2conseq(freq, cutoff=None, ins_cutoff=0.5):
     last_pos = None
     for pos in keys:
         try:
-            row = freq[str(pos)]
+            row = freq[pos]
         except:
             print(freq.keys())
             print(pos)
@@ -468,13 +467,14 @@ def freq2conseq(freq, cutoff=None, ins_cutoff=0.5):
         else:
             conseq += max_state[0]
 
-        # check for insertions to the right of current position
-        iseqs, icounts = zip(*row['ins'].items())
+        if row['ins']:
+            # check for insertions to the right of current position
+            iseqs, icounts = zip(*row['ins'].items())
 
-        if sum(icounts) / sum(counts) > ins_cutoff:
-            # we have no way of representing a mixture of insertion
-            # and non-insertion states, so default to plurality rule
-            conseq += iseqs[icounts.index(max(icounts))]
+            if sum(icounts) / sum(counts) > ins_cutoff:
+                # we have no way of representing a mixture of insertion
+                # and non-insertion states, so default to plurality rule
+                conseq += iseqs[icounts.index(max(icounts))]
 
         last_pos = pos
 
@@ -488,7 +488,7 @@ def import_freq(handle):
         for nt in 'ACGTN-':
             row[nt] = int(row[nt])
         row['ins'] = eval(row['ins'])
-        res.update({row['pos']: row})
+        res.update({int(row['pos']): row})
     return(res)
 
 
@@ -509,13 +509,13 @@ def main():
                         help="<output> consensus sequence")
 
     # FIXME: this isn't used
-    parser.add_argument('--qcut', type=int,
+    parser.add_argument('--qcut', '-q', type=int,
                         help="<optional> Quality score cutoff")
 
-    parser.add_argument('--threshold', type=float,
+    parser.add_argument('--threshold', '-t', type=float,
                         help="<optional> Frequency cutoff (0,1) for majority-rule "
                              "consensus")
-    parser.add_argument('--unpaired', action='store_true',
+    parser.add_argument('--unpaired', '-U', action='store_true',
                         help="Reads are unpaired (single layout).")
 
     args = parser.parse_args()
