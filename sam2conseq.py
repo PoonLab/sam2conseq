@@ -346,7 +346,7 @@ def sam2freq(samfile, unpaired=False):
     :param samfile: open stream to SAM file
     :return: dict, nucleotide and insertion counts
     """
-
+    # TODO: it might be faster to pre-allocate a list instead of a dict
     reader = DictReader(filter(lambda x: not x.startswith('@'), samfile),
                         fieldnames=['qname', 'flag', 'rname', 'pos', 'mapq',
                                     'cigar', 'rnext', 'pnext', 'tlen', 'seq',
@@ -468,6 +468,12 @@ def freq2conseq(freq, cutoff=None, ins_cutoff=0.5):
 
 
 def import_freq(handle):
+    """
+    Import frequency table from CSV file.
+    Used for regenerating a consensus sequence during development.
+    @param handle: file stream, open to a CSV file
+    @return: dict, frequency table
+    """
     res = {}
     for row in DictReader(handle):
         for nt in 'ACGTN-':
