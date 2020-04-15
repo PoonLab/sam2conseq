@@ -5,7 +5,7 @@ You can view our progress in the [issue tracker](https://github.com/PoonLab/sam2
 
 This script is derived from the Python script `sam2aln.py` that is part of the [MiCall pipeline](http://github.com/cfe-lab/MiCall).
 
-## Workflow
+## Example workflow
 1. Use `cutadapt` to remove contaminant adapter sequences:
 ```
 cutadapt -q 20,20 -a CTGTCTCTTATACACATCT -A CTGTCTCTTATACACATCT -o SRR11140746_1.trim.fastq.gz -p SRR11140746_2.trim.fastq.gz SRR11140746_1.fastq.gz SRR11140746_2.fastq.gz --cores 6
@@ -21,3 +21,7 @@ bowtie2 -x NC_045512 -1 SRR11140746_1.trim.fastq.gz -2 SRR11140746_2.trim.fastq.
 python3 sam2conseq.py data/SRR11140746.trim.sam test.csv test.out
 ```
 
+If the SAM file was generated from a FASTQ file containing unpaired reads, you need to specify an `--unpaired` flag:
+```
+python3 sam2conseq.py --unpaired data/SRR11278167.trim.fastq data/SRR11278167.freqs.csv data/SRR11278167.conseq.txt
+```
