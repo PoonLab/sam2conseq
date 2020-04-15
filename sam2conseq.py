@@ -213,7 +213,7 @@ def is_first_read(flag):
     return (int(flag) & SAM_FLAG_IS_FIRST_SEGMENT) != 0
 
 
-def matchmaker(reader):
+def matchmaker(reader, unpaired=False):
     """
     Iterate over a SAM file and return paired-end reads as tuples.
     Should be able to redirect standard output from a mapper program, e.g.,
@@ -221,23 +221,25 @@ def matchmaker(reader):
     :param reader:  an open csv.DictReader object
     :return:  tuples of paired read entries, generated from stream.
     """
-    cached_rows = {}
-    for row in reader:
-        qname = row['qname']
-        old_row = cached_rows.pop(qname, None)
-        if old_row is None:
-            cached_rows[qname] = row
-        else:
-            # current row should be the second read of the pair
-            yield old_row, row
+    if unpaired:
+        for row in reader:
+            yield row
+    else:
+        cached_rows = {}
+        for row in reader:
+            qname = row['qname']
+            old_row = cached_rows.pop(qname, None)
+            if old_row is None:
+                cached_rows[qname] = row
+            else:
+                # current row should be the second read of the pair
+                yield old_row, row
 
-    # return remaining unpaired reads
-    for old_row in cached_rows.values():
-        yield old_row, None
+        # return remaining unpaired reads
+        for old_row in cached_rows.values():
+            yield old_row, None
 
 
-
-# TODO: handle reads from unpaired SAM
 def parse_sam(rows, qcut=15):
     """ Merge two matched reads into a single aligned read.
 
@@ -262,7 +264,7 @@ def parse_sam(rows, qcut=15):
                          'mseq': merged_sequence}] sequences that failed to
         merge.
     """
-    if len(rows) == 2:
+    if type(rows) is tuple:
         unpaired = False
         row1, row2 = rows
     else:
@@ -270,6 +272,7 @@ def parse_sam(rows, qcut=15):
         row1 = rows
         row2 = None
 
+    mseq = ''
     failed_list = []
     insert_list = []
     rname = row1['rname']
@@ -277,7 +280,11 @@ def parse_sam(rows, qcut=15):
 
     cigar1 = row1['cigar']
     if not unpaired:
-        cigar2 = row2['cigar']
+        try:
+            cigar2 = row2['cigar']
+        except:
+            print("Error: expected row2 in parse_sam; did you forget to set --unpaired?")
+            raise
 
     failure_cause = None
     if unpaired:
@@ -354,10 +361,11 @@ def sam2freq(samfile, unpaired=False):
                         delimiter='\t')
 
     res = {}
-    iter = map(parse_sam, reader if unpaired else matchmaker(reader))
+    # construct iterable
+    itr = map(parse_sam, matchmaker(reader, unpaired))
 
     counter = 0
-    for rname, mseq, insert_list, failed_list in iter:
+    for rname, mseq, insert_list, failed_list in itr:
         start = len_terminal_gap(mseq)
         seq = mseq.lstrip('-')
 
@@ -390,9 +398,9 @@ def sam2freq(samfile, unpaired=False):
         if counter % 1000 == 0:
             print(counter)
         #if counter > 20000:
-        #    break  # profiling
+        #    break  # profiling/debugging
 
-    return(res)
+    return res
 
 
 def freq2conseq(freq, cutoff=None, ins_cutoff=0.5):
@@ -410,14 +418,19 @@ def freq2conseq(freq, cutoff=None, ins_cutoff=0.5):
     :return:  str, consensus sequence
     """
 
-    keys = [int(x) for x in freq.keys()]
+    keys = [x for x in freq.keys()]
     keys.sort()
 
     alpha = ['A', 'C', 'G', 'T', 'N', '-']
     conseq = ''
     last_pos = None
     for pos in keys:
-        row = freq[str(pos)]
+        try:
+            row = freq[pos]
+        except:
+            print(freq.keys())
+            print(pos)
+            raise
 
         if not last_pos is None and pos - last_pos > 1:
             # incomplete coverage
@@ -453,13 +466,14 @@ def freq2conseq(freq, cutoff=None, ins_cutoff=0.5):
         else:
             conseq += max_state[0]
 
-        # check for insertions to the right of current position
-        iseqs, icounts = zip(*row['ins'].items())
+        if row['ins']:
+            # check for insertions to the right of current position
+            iseqs, icounts = zip(*row['ins'].items())
 
-        if sum(icounts) / sum(counts) > ins_cutoff:
-            # we have no way of representing a mixture of insertion
-            # and non-insertion states, so default to plurality rule
-            conseq += iseqs[icounts.index(max(icounts))]
+            if sum(icounts) / sum(counts) > ins_cutoff:
+                # we have no way of representing a mixture of insertion
+                # and non-insertion states, so default to plurality rule
+                conseq += iseqs[icounts.index(max(icounts))]
 
         last_pos = pos
 
@@ -479,7 +493,7 @@ def import_freq(handle):
         for nt in 'ACGTN-':
             row[nt] = int(row[nt])
         row['ins'] = eval(row['ins'])
-        res.update({row['pos']: row})
+        res.update({int(row['pos']): row})
     return(res)
 
 
@@ -500,13 +514,13 @@ def main():
                         help="<output> consensus sequence")
 
     # FIXME: this isn't used
-    parser.add_argument('--qcut', type=int,
+    parser.add_argument('--qcut', '-q', type=int,
                         help="<optional> Quality score cutoff")
 
-    parser.add_argument('--threshold', type=float,
+    parser.add_argument('--threshold', '-t', type=float,
                         help="<optional> Frequency cutoff (0,1) for majority-rule "
                              "consensus")
-    parser.add_argument('--unpaired', action='store_true',
+    parser.add_argument('--unpaired', '-U', action='store_true',
                         help="Reads are unpaired (single layout).")
 
     args = parser.parse_args()
