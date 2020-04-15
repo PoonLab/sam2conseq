@@ -7,21 +7,20 @@ This script is derived from the Python script `sam2aln.py` that is part of the [
 
 ## Example workflow
 1. Use `cutadapt` to remove contaminant adapter sequences:
-```
-cutadapt -q 20,20 -a CTGTCTCTTATACACATCT -A CTGTCTCTTATACACATCT -o SRR11140746_1.trim.fastq.gz -p SRR11140746_2.trim.fastq.gz SRR11140746_1.fastq.gz SRR11140746_2.fastq.gz --cores 6
-```
+   ```console
+   cutadapt -q 20,20 -a CTGTCTCTTATACACATCT -A CTGTCTCTTATACACATCT -o SRR11140746_1.trim.fastq.gz -p SRR11140746_2.trim.fastq.gz SRR11140746_1.fastq.gz SRR11140746_2.fastq.gz --cores 6
+   ```
 
 2. Use `bowtie2` to map reads to SARS-COV-2 reference sequence `NC_045512`:
-```
-bowtie2 -x NC_045512 -1 SRR11140746_1.trim.fastq.gz -2 SRR11140746_2.trim.fastq.gz -S SRR11140746.trim.sam --local -p 12
-```
+   ```console
+   bowtie2 -x NC_045512 -1 SRR11140746_1.trim.fastq.gz -2 SRR11140746_2.trim.fastq.gz -S SRR11140746.trim.sam --local -p 12
+   ```
 
 3. Run `sam2conseq.py` on resulting SAM file.  We have to specify output paths to write the frequency table (CSV) and consensus sequence (plain text) as the second and third positional arguments, respectively:
-```
-python3 sam2conseq.py data/SRR11140746.trim.sam test.csv test.out
-```
-
-If the SAM file was generated from a FASTQ file containing unpaired reads, you need to specify an `--unpaired` flag:
-```
-python3 sam2conseq.py --unpaired data/SRR11278167.trim.fastq data/SRR11278167.freqs.csv data/SRR11278167.conseq.txt
-```
+   ```console
+   python3 sam2conseq.py data/SRR11140746.trim.sam test.csv test.out
+   ```
+   If the SAM file was generated from a FASTQ file containing unpaired reads, you need to specify an `--unpaired` flag:
+   ```console
+   python3 sam2conseq.py --unpaired data/SRR11278167.trim.fastq data/SRR11278167.freqs.csv data/SRR11278167.conseq.txt
+   ```
