@@ -240,8 +240,6 @@ def matchmaker(reader, unpaired=False):
             yield old_row, None
 
 
-
-# TODO: handle reads from unpaired SAM
 def parse_sam(rows, qcut=15):
     """ Merge two matched reads into a single aligned read.
 
