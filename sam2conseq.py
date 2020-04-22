@@ -1,19 +1,10 @@
 import argparse
 from csv import DictReader, DictWriter
 import re
+import subprocess
 
-
-try:
-    import multiprocessing.forking  # Python 2.x
-except:
-    import multiprocessing.popen_fork as forking  # Python 3.x
-
-import multiprocessing.pool
 
 SAM_FLAG_IS_FIRST_SEGMENT = 0x40
-SAM2ALN_Q_CUTOFFS = [15]  # Q-cutoff for base censoring
-MAX_PROP_N = 0.5          # Drop reads with more censored bases than this proportion
-
 cigar_re = re.compile('[0-9]+[MIDNSHPX=]')  # CIGAR token
 gpfx = re.compile('^[-]+')  # length of gap prefix
 gsfx = re.compile('[-]+$')  # length of gap suffix
@@ -29,6 +20,9 @@ ambig_dict = {
     'AN': 'A', 'CN': 'C', 'GN': 'G', 'TN': 'T'
     # any other combination is resolved as "N"
 }
+
+# FIXME: this should be an option
+MAX_PROP_N = 0.5  # drop reads with more censored bases than this proportion
 
 
 def apply_cigar(cigar, seq, qual, pos=0):
@@ -347,14 +341,29 @@ def parse_sam(rows, qcut=15):
     return rname, mseq, insert_list, failed_list
 
 
-def sam2freq(samfile, unpaired=False):
+def sam2freq(samfile, unpaired=False, callback=None):
     """
     Parse contents of sequence/alignment map (SAM) file to apply
     local alignment information encoded in CIGAR string.
 
     :param samfile: open stream to SAM file
+    :param callback: optional function for progress monitoring
     :return: dict, nucleotide and insertion counts
     """
+
+    # get number of lines in SAM file
+    res = subprocess.check_output(['wc', '-l', samfile.name])
+    nlines = int(res.split()[0])
+
+    # parse header lines - work in progress
+    """
+    reflen = 0
+    for line in samfile:
+        if line.startswith('@'):
+            if line.startswith('@SQ'):
+                tokens = line.strip().split('\t')[-1]
+    """
+
     reader = DictReader(filter(lambda x: not x.startswith('@'), samfile),
                         fieldnames=['qname', 'flag', 'rname', 'pos', 'mapq',
                                     'cigar', 'rnext', 'pnext', 'tlen', 'seq',
@@ -394,12 +403,10 @@ def sam2freq(samfile, unpaired=False):
                 res[pos]['ins'].update({iseq: 0})
             res[pos]['ins'][iseq] += 1
 
-        # FIXME: turn this into a callback function
         counter += 1
-        if counter % 1000 == 0:
-            print(counter)
-        #if counter > 20000:
-        #    break  # profiling/debugging
+        if callback:
+            callback("{}/{}".format(counter, nlines))
+
 
     return res
 
