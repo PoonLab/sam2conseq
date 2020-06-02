@@ -87,6 +87,11 @@ def apply_cigar(cigar, seq, qual, pos=0):
         # Soft clipping leaves the sequence in the SAM - so we should skip it
         elif operation == 'S':
             left += length
+
+        # Hard clipping has no corresponding substring in query sequence
+        elif operation == 'H':
+            pass
+
         else:
             raise RuntimeError(
                 'Unsupported CIGAR token: {!r}.'.format(''.join(token))
